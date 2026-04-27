@@ -2,68 +2,67 @@ package snapshot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
 // Snapshot represents a captured set of environment variables.
 type Snapshot struct {
 	Name      string            `json:"name"`
+	Vars      map[string]string `json:"vars"`
 	CreatedAt time.Time         `json:"created_at"`
-	Env       map[string]string `json:"env"`
 }
 
-// New creates a new Snapshot from the current process environment.
+// New creates a new Snapshot from a slice of "KEY=VALUE" strings (e.g. os.Environ()).
 func New(name string, environ []string) (*Snapshot, error) {
 	if name == "" {
-		return nil, fmt.Errorf("snapshot name must not be empty")
+		return nil, errors.New("snapshot name must not be empty")
 	}
 
-	env := make(map[string]string, len(environ))
+	vars := make(map[string]string, len(environ))
 	for _, entry := range environ {
-		for i := 0; i < len(entry); i++ {
-			if entry[i] == '=' {
-				env[entry[:i]] = entry[i+1:]
-				break
-			}
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
 		}
+		vars[parts[0]] = parts[1]
 	}
 
 	return &Snapshot{
 		Name:      name,
-		CreatedAt: time.Now().UTC(),
-		Env:       env,
+		Vars:      vars,
+		CreatedAt: time.Now(),
 	}, nil
 }
 
 // Save writes the snapshot to a JSON file at the given path.
 func (s *Snapshot) Save(path string) error {
-	f, err := os.Create(path)
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		return fmt.Errorf("creating snapshot file: %w", err)
+		return fmt.Errorf("marshal snapshot: %w", err)
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(s); err != nil {
-		return fmt.Errorf("encoding snapshot: %w", err)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write snapshot file: %w", err)
 	}
 	return nil
 }
 
 // Load reads a snapshot from a JSON file at the given path.
 func Load(path string) (*Snapshot, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening snapshot file: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("snapshot file not found: %s", path)
+		}
+		return nil, fmt.Errorf("read snapshot file: %w", err)
 	}
-	defer f.Close()
 
 	var s Snapshot
-	if err := json.NewDecoder(f).Decode(&s); err != nil {
-		return nil, fmt.Errorf("decoding snapshot: %w", err)
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("unmarshal snapshot: %w", err)
 	}
 	return &s, nil
 }
